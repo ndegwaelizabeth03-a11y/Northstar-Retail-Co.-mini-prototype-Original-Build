@@ -70,3 +70,172 @@ dashboard has something real to show changing over time.)
 
 
 
+# Northstar-Co-Ltd
+Syncing service for Northstar Company inventory
+from flask import Flask, jsonify
+import threading
+import time
+import requests
+
+app = Flask(__name__)
+
+# -------------------------------------------------
+# 1.WAREHOUSE INVENTORY
+# -------------------------------------------------
+
+warehouse_inventory = {
+    "ANG-001": {
+        "name": "Angham",
+        "quantity": 10
+    },
+    "JZG-001": {
+        "name": "Jazaab Gold",
+        "quantity": 7
+    },
+    "ELY-VAN-001": {
+        "name": "Elysia Vanilla",
+        "quantity": 8
+    },
+    "ATH-001": {
+        "name": "Atheeri",
+        "quantity": 12
+    },
+    "KHC-001": {
+        "name": "Khair Confection",
+        "quantity": 15
+    }
+}
+
+
+# -------------------------------------------------
+# 2. CACHED INVENTORY
+# -------------------------------------------------
+
+cached_inventory = {}
+
+
+# -------------------------------------------------
+# 3.WAREHOUSE API
+# -------------------------------------------------
+
+@app.route("/warehouse/inventory")
+def warehouse_api():
+    """
+    Pretends to be the warehouse's inventory API.
+    """
+    return jsonify(warehouse_inventory)
+
+
+# -------------------------------------------------
+# 4. RETRY + EXPONENTIAL BACKOFF
+# -------------------------------------------------
+
+def fetch_warehouse_inventory():
+
+    max_retries = 3
+    delay = 1
+
+    for attempt in range(max_retries):
+
+        try:
+            response = requests.get(
+                "http://127.0.0.1:5000/warehouse/inventory",
+                timeout=5
+            )
+
+            response.raise_for_status()
+
+            print("Warehouse API request successful.")
+
+            return response.json()
+
+        except requests.RequestException as error:
+
+            print(
+                f"Attempt {attempt + 1} failed: {error}"
+            )
+
+            if attempt == max_retries - 1:
+                print("All retry attempts failed.")
+                return None
+
+            print(f"Waiting {delay} seconds before retrying...")
+
+            time.sleep(delay)
+
+            # Exponential backoff
+            delay *= 2
+
+
+# -------------------------------------------------
+# 5. POLLER
+# -------------------------------------------------
+
+def poll_warehouse():
+
+    while True:
+
+        latest_inventory = fetch_warehouse_inventory()
+
+        if latest_inventory is not None:
+
+            cached_inventory.clear()
+            cached_inventory.update(latest_inventory)
+
+            print("Inventory cache updated.")
+            print(cached_inventory)
+
+        else:
+
+            print(
+                "Could not update inventory. "
+                "Keeping existing cache."
+            )
+
+        # Wait 5 minutes before polling again
+        time.sleep(300)
+
+
+# -------------------------------------------------
+# 6. SUPPORT QUERY ENDPOINT
+# -------------------------------------------------
+
+@app.route("/inventory/<product_id>")
+def check_stock(product_id):
+
+    if product_id not in cached_inventory:
+        return jsonify({
+            "error": "Product not found"
+        }), 404
+
+    product = cached_inventory[product_id]
+
+    return jsonify({
+        "product_id": product_id,
+        "product_name": product["name"],
+        "quantity": product["quantity"],
+        "in_stock": product["quantity"] > 0
+    })
+
+
+# -------------------------------------------------
+# 7. START THE POLLER
+# -------------------------------------------------
+
+poller_thread = threading.Thread(
+    target=poll_warehouse,
+    daemon=True
+)
+
+poller_thread.start()
+
+
+# -------------------------------------------------
+# 8. START THE SERVER
+# -------------------------------------------------
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=5000
+    )
